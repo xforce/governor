@@ -7,7 +7,11 @@ use crate::{
     state::{DirectStateStore, NotKeyed},
     Jitter, NegativeMultiDecision, NotUntil,
 };
+
+#[cfg(feature = "futures-timer")]
 use futures_timer::Delay;
+#[cfg(all(not(feature = "futures-timer"), feature = "tokio-sleep"))]
+use tokio::time::sleep;
 
 /// An error that occurs when the number of cells required in `check_n`
 /// exceeds the maximum capacity of the limiter.
@@ -65,8 +69,15 @@ where
                     return x;
                 }
                 Err(negative) => {
-                    let delay = Delay::new(jitter + negative.wait_time_from(self.clock.now()));
-                    delay.await;
+                    #[cfg(feature = "futures-timer")]
+                    {
+                        let delay = Delay::new(jitter + negative.wait_time_from(self.clock.now()));
+                        delay.await;
+                    }
+                    #[cfg(all(not(feature = "futures-timer"), feature = "tokio-sleep"))]
+                    {
+                        sleep(jitter + negative.wait_time_from(self.clock.now())).await;
+                    }
                 }
             }
         }
@@ -105,8 +116,15 @@ where
                     return Ok(x);
                 }
                 Err(NegativeMultiDecision::BatchNonConforming(_, negative)) => {
-                    let delay = Delay::new(jitter + negative.wait_time_from(self.clock.now()));
-                    delay.await;
+                    #[cfg(feature = "futures-timer")]
+                    {
+                        let delay = Delay::new(jitter + negative.wait_time_from(self.clock.now()));
+                        delay.await;
+                    }
+                    #[cfg(all(not(feature = "futures-timer"), feature = "tokio-sleep"))]
+                    {
+                        sleep(jitter + negative.wait_time_from(self.clock.now())).await;
+                    }
                 }
                 Err(NegativeMultiDecision::InsufficientCapacity(cap)) => {
                     return Err(InsufficientCapacity(cap))

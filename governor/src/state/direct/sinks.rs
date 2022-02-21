@@ -8,9 +8,12 @@ use crate::{
 };
 use futures::task::{Context, Poll};
 use futures::{Future, Sink, Stream};
+#[cfg(feature = "futures-timer")]
 use futures_timer::Delay;
 use std::marker::PhantomData;
 use std::pin::Pin;
+#[cfg(all(not(feature = "futures-timer"), feature = "tokio-sleep"))]
+use tokio::time::{sleep, Sleep};
 
 /// Allows converting a [`futures::Sink`] combinator into a rate-limited sink.
 pub trait SinkRateLimitExt<Item, S>: Sink<Item>
@@ -97,7 +100,10 @@ pub struct RatelimitedSink<
     inner: S,
     state: State,
     limiter: &'a RateLimiter<NotKeyed, D, C, MW>,
+    #[cfg(feature = "futures-timer")]
     delay: Delay,
+    #[cfg(all(not(feature = "futures-timer"), feature = "tokio-sleep"))]
+    delay: Pin<Box<Sleep>>,
     jitter: Jitter,
     phantom: PhantomData<Item>,
 }
@@ -116,7 +122,16 @@ impl<
         RatelimitedSink {
             inner,
             limiter,
-            delay: Delay::new(Default::default()),
+            delay: {
+                #[cfg(feature = "futures-timer")]
+                {
+                    Delay::new(Default::default())
+                }
+                #[cfg(all(not(feature = "futures-timer"), feature = "tokio-sleep"))]
+                {
+                    Box::pin(sleep(Default::default()))
+                }
+            },
             state: State::NotReady,
             jitter,
             phantom: PhantomData,
@@ -172,8 +187,20 @@ where
                     let reference = self.limiter.reference_reading();
                     if let Err(negative) = self.limiter.check() {
                         let earliest = negative.wait_time_with_offset(reference, self.jitter);
-                        self.delay.reset(earliest);
-                        let future = Pin::new(&mut self.delay);
+                        #[cfg(feature = "futures-timer")]
+                        let future = {
+                            self.delay.reset(earliest);
+                            let future = Pin::new(&mut self.delay);
+                            future
+                        };
+                        #[cfg(all(not(feature = "futures-timer"), feature = "tokio-sleep"))]
+                        let future = {
+                            self.delay
+                                .as_mut()
+                                .reset(tokio::time::Instant::now() + earliest);
+                            self.delay.as_mut()
+                        };
+
                         match future.poll(cx) {
                             Poll::Pending => {
                                 self.state = State::Wait;
@@ -186,7 +213,17 @@ where
                     }
                 }
                 State::Wait => {
-                    let future = Pin::new(&mut self.delay);
+                    #[cfg(feature = "futures-timer")]
+                    let future = {
+                        let future = Pin::new(&mut self.delay);
+                        future
+                    };
+                    #[cfg(all(not(feature = "futures-timer"), feature = "tokio-sleep"))]
+                    let future = {
+                        let future = unsafe { Pin::new_unchecked(&mut self.delay) };
+                        future
+                    };
+
                     match future.poll(cx) {
                         Poll::Pending => {
                             return Poll::Pending;

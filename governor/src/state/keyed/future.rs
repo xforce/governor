@@ -4,8 +4,11 @@ use crate::{
     clock, middleware::RateLimitingMiddleware, state::keyed::KeyedStateStore, Jitter, NotUntil,
     RateLimiter,
 };
+#[cfg(feature = "futures-timer")]
 use futures_timer::Delay;
 use std::hash::Hash;
+#[cfg(all(not(feature = "futures-timer"), feature = "tokio-sleep"))]
+use tokio::time::sleep;
 
 #[cfg(feature = "std")]
 /// # Keyed rate limiters - `async`/`await`
@@ -51,8 +54,15 @@ where
                     return x;
                 }
                 Err(negative) => {
-                    let delay = Delay::new(jitter + negative.wait_time_from(self.clock.now()));
-                    delay.await;
+                    #[cfg(feature = "futures-timer")]
+                    {
+                        let delay = Delay::new(jitter + negative.wait_time_from(self.clock.now()));
+                        delay.await;
+                    }
+                    #[cfg(all(not(feature = "futures-timer"), feature = "tokio-sleep"))]
+                    {
+                        sleep(jitter + negative.wait_time_from(self.clock.now())).await;
+                    }
                 }
             }
         }
